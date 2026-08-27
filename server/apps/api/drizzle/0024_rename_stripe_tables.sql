@@ -1,3 +1,4 @@
+ALTER TABLE "user_flux" DROP COLUMN "stripe_customer_id";--> statement-breakpoint
 ALTER TABLE "stripe_checkout_session" RENAME TO "legacy_stripe_checkout_session";--> statement-breakpoint
 ALTER TABLE "legacy_stripe_checkout_session" RENAME CONSTRAINT "stripe_checkout_session_stripe_session_id_unique" TO "legacy_stripe_checkout_session_stripe_session_id_unique";--> statement-breakpoint
 ALTER TABLE "stripe_customer" RENAME TO "legacy_stripe_customer";--> statement-breakpoint

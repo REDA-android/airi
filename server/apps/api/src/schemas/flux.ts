@@ -6,14 +6,6 @@ import { bigint, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 export const userFlux = pgTable('user_flux', {
   userId: text('user_id').primaryKey(),
   flux: bigint('flux', { mode: 'number' }).notNull().default(0),
-  // NOTICE:
-  // Unused at runtime. drizzle-kit generate emits DROP COLUMN if this
-  // field is removed from the schema. The value is a copy of the archived
-  // Stripe customer id.
-  // Source: server/apps/api/drizzle/0023_payment_order.sql
-  // Removal condition: a later SQL migration drops the column when the
-  // archived Stripe rows are no longer needed.
-  stripeCustomerId: text('stripe_customer_id'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),
 })
