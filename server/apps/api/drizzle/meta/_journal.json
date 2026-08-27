@@ -173,8 +173,8 @@
     {
       "idx": 24,
       "version": "7",
-      "when": 1786957404394,
-      "tag": "0024_drop_stripe_tables",
+      "when": 1787808818776,
+      "tag": "0024_rename_stripe_tables",
       "breakpoints": true
     }
   ]
