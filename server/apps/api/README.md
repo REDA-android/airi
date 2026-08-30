@@ -59,7 +59,7 @@ pnpm dev:backend
 For source-level debugging, start `@proj-airi/api-server` and
 `@proj-airi/auth-server` separately instead.
 
-- `@proj-airi/api-server` (this package): listens on `PORT=3000` (local `https://localhost:3000` or via Caddy edge at `https://dev.airi.moeru.ai/api/v1`).
+- `@proj-airi/api-server` (this package): listens on `PORT=3000` (local `http://localhost:3000` or via Caddy edge at `https://dev.airi.moeru.ai/api/v1`).
 - `@proj-airi/auth-server`: listens on `PORT=3001` (local `https://localhost:3001` or via Caddy edge at `https://dev.airi.moeru.ai/api/auth`).
 - `server/dev/caddy`: terminates HTTPS on `dev.airi.moeru.ai` with local mkcert certificates, routing `/api/auth/*` to auth and everything else to api.
 - `server/docker-compose.yaml`: starts Postgres and Redis.
@@ -73,7 +73,9 @@ Key variables:
 
 - `DATABASE_URL`: PostgreSQL connection string.
 - `REDIS_URL`: Redis connection string.
-- `AUTH_JWKS_URL`: URL to fetch the Auth service's public JWKS for OIDC JWT verification (defaults to `http://127.0.0.1:3001/api/auth/jwks`).
-- `AUTH_ISSUER`: Expected `iss` claim on incoming JWTs (defaults to `http://127.0.0.1:3001/api/auth`).
+- `AUTH_SERVER_URL`: Auth's public issuer origin (defaults to `http://localhost:3000`). This value must equal Auth's `PUBLIC_URL`. Expected JWT `iss` is `AUTH_SERVER_URL` plus `/api/auth`. Expected JWT `aud` is `AUTH_SERVER_URL`.
+- `AUTH_SERVER_INTERNAL_URL`: Optional private Auth origin. When this variable is set, JWKS fetch uses that origin plus `/api/auth/jwks`. When this variable is unset, JWKS fetch uses `AUTH_SERVER_URL` plus `/api/auth/jwks`. Issuer and audience stay on `AUTH_SERVER_URL`.
 - `PORT`: HTTP port (defaults to 3000).
 - `HOST`: Bind host (defaults to `0.0.0.0`).
+
+On Railway, set `AUTH_SERVER_INTERNAL_URL` from Auth's private domain. This variable is only the private JWKS route. `AUTH_SERVER_URL` remains the public Auth issuer URL. See [`server/README.md`](../../README.md#railway-deployment) for the complete cross-service variable contract.
