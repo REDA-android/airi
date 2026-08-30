@@ -13,7 +13,6 @@ import { Hono } from 'hono'
 
 import { authGuard } from '../../middlewares/auth'
 import { rateLimiter } from '../../middlewares/rate-limit'
-import { loadFluxPacks } from '../../services/domain/payment'
 import { createCheckoutOperation } from './operations/checkout'
 import { createWebhookOperation } from './operations/webhook'
 import { listStripePackages } from './price-catalog'
@@ -40,7 +39,7 @@ export function createStripeRoutes(
 
   return new Hono<HonoEnv>()
     .get('/packages', async (c) => {
-      const packs = await loadFluxPacks(configKV)
+      const packs = await configKV.getOptional('FLUX_PACKS') ?? []
       return c.json(await listStripePackages(stripe, redis, packs))
     })
     .post('/checkout', authGuard, rateLimiter({ max: 10, windowSec: 60, metrics: rateLimitMetrics, routeLabel: 'stripe.checkout' }), async (c) => {

@@ -1,6 +1,5 @@
 import type { Database } from '../../libs/db'
-import type { ConfigKVService } from '../../services/adapters/config-kv'
-import type { FluxPack } from '../../services/domain/payment'
+import type { ConfigDefinitions, ConfigKVService } from '../../services/adapters/config-kv'
 
 import { eq } from 'drizzle-orm'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,7 +12,7 @@ import { createCheckoutOperation } from './operations/checkout'
 
 import * as schema from '../../schemas'
 
-const starterPack: FluxPack = {
+const starterPack: ConfigDefinitions['FLUX_PACKS'][number] = {
   key: 'starter',
   name: '500 Flux',
   fluxAmount: 500,
@@ -31,7 +30,7 @@ const testEnv = {
 
 const testUser = { id: 'user-pay-1', name: 'Pay User', email: 'pay@example.com' }
 
-function createPacksConfigKV(packs: FluxPack[]): ConfigKVService {
+function createPacksConfigKV(packs: ConfigDefinitions['FLUX_PACKS']): ConfigKVService {
   return {
     getOptional: vi.fn(async (key: string) => {
       if (key === 'FLUX_PACKS')
@@ -43,6 +42,22 @@ function createPacksConfigKV(packs: FluxPack[]): ConfigKVService {
     refresh: vi.fn(),
     invalidateCache: vi.fn(),
   } as ConfigKVService
+}
+
+function createCheckout(
+  db: Database,
+  stripe: { checkout: { sessions: { create: ReturnType<typeof vi.fn> } } },
+  packs: ConfigDefinitions['FLUX_PACKS'] = [starterPack],
+  productEventService: { track: ReturnType<typeof vi.fn> } | null = null,
+) {
+  return createCheckoutOperation(
+    db,
+    stripe as never,
+    createPacksConfigKV(packs),
+    testEnv,
+    null,
+    productEventService as never,
+  )
 }
 
 describe('stripe checkout', () => {
@@ -86,14 +101,7 @@ describe('stripe checkout', () => {
       }
     })
 
-    const checkout = createCheckoutOperation(
-      db,
-      { checkout: { sessions: { create } } } as any,
-      createPacksConfigKV([starterPack]),
-      testEnv,
-      null,
-      null,
-    )
+    const checkout = createCheckout(db, { checkout: { sessions: { create } } })
 
     const result = await checkout(
       testUser,
@@ -118,14 +126,7 @@ describe('stripe checkout', () => {
       currency: 'usd',
     }))
 
-    const checkout = createCheckoutOperation(
-      db,
-      { checkout: { sessions: { create } } } as any,
-      createPacksConfigKV([starterPack]),
-      testEnv,
-      null,
-      null,
-    )
+    const checkout = createCheckout(db, { checkout: { sessions: { create } } })
 
     await checkout(
       testUser,
@@ -162,14 +163,7 @@ describe('stripe checkout', () => {
       }
     })
 
-    const checkout = createCheckoutOperation(
-      db,
-      { checkout: { sessions: { create } } } as any,
-      createPacksConfigKV([starterPack]),
-      testEnv,
-      null,
-      null,
-    )
+    const checkout = createCheckout(db, { checkout: { sessions: { create } } })
 
     await checkout(
       testUser,
@@ -194,14 +188,7 @@ describe('stripe checkout', () => {
     }))
     const productEventService = { track: vi.fn() }
 
-    const checkout = createCheckoutOperation(
-      db,
-      { checkout: { sessions: { create } } } as any,
-      createPacksConfigKV([starterPack]),
-      testEnv,
-      null,
-      productEventService as any,
-    )
+    const checkout = createCheckout(db, { checkout: { sessions: { create } } }, [starterPack], productEventService)
 
     await checkout(
       testUser,

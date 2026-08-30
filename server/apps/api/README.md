@@ -17,21 +17,29 @@ auth/OIDC routes.
 `src/services/domain/payment` owns pack grant and `payment_order` rows.
 CORE exposes `settle` and `deleteAllForUser`.
 
-Checkout, package list, and session mapping live in the Stripe channel
-at `src/routes/stripe`. Each provider keeps its own HTTP paths. Stripe
-stays on `/api/v1/stripe/*`. CORE never sees a raw provider event.
+Checkout, package list, and session mapping live in the Stripe and Steam
+channels. Each provider keeps its own HTTP paths. Stripe stays on
+`/api/v1/stripe/*`. Steam stays on `/api/v1/steam/*`. CORE never sees a
+raw provider event. A channel maps the provider result onto a
+`ClaimReceipt`, then calls `settle`.
 
 - `settle` claims a pending order (`pending` to `paid`). One transaction
   writes `credited_at` and calls `creditFlux`. Replay returns `applied: false`.
 - Pack snapshots (`pack_key`, `flux_amount`) live on the order row.
-- The Stripe channel reads `FLUX_PACKS` through payment CORE and Stripe Price
-  objects for display prices.
+- Channels read `FLUX_PACKS` from ConfigKV. Stripe display prices
+  come from Stripe Price objects (Redis cache). Steam display prices come
+  from the pack row.
 - `POST /api/v1/stripe/checkout` inserts the pending order, then creates
   the Checkout Session.
 - `POST /api/v1/stripe/webhook` verifies the signature, maps the session
   to a `ClaimReceipt`, and calls `settle`. New Sessions carry
   `metadata.payment_order_id`. Sessions created before this migration
   resolve the order by Stripe session id.
+- `POST /api/v1/steam/checkout` inserts the pending order, then calls
+  ISteamMicroTxn InitTxn with a web session. The response includes the Steam
+  checkout URL. The client must have a linked Steam account.
+- `POST /api/v1/steam/finalize` calls FinalizeTxn after the user returns from
+  Steam, maps the pending order to a `ClaimReceipt`, and calls `settle`.
 
 ## Run locally
 

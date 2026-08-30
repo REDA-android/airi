@@ -69,10 +69,11 @@ function createTestApp(
   },
   configKV: ConfigKVService = createMockConfigKV(),
 ) {
+  const stripeClient = envOverrides.STRIPE_SECRET_KEY === '' ? null : stripe
   const routes = createStripeRoutes(
     payment,
     {} as never,
-    envOverrides.STRIPE_SECRET_KEY === '' ? null : stripe,
+    stripeClient,
     createTestRedis(),
     configKV,
     { ...testEnv, ...envOverrides },
@@ -124,7 +125,6 @@ describe('stripeRoutes', () => {
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual([{
         packKey: 'starter',
-        stripePriceId: 'price_test_500',
         label: '500 Flux',
         defaultCurrency: 'usd',
         currencies: { usd: '$5.00' },

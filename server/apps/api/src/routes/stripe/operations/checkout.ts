@@ -3,14 +3,12 @@ import type Stripe from 'stripe'
 import type { Database } from '../../../libs/db'
 import type { Env } from '../../../libs/env'
 import type { RevenueMetrics } from '../../../otel'
-import type { ConfigKVService } from '../../../services/adapters/config-kv'
-import type { FluxPack } from '../../../services/domain/payment'
+import type { ConfigDefinitions, ConfigKVService } from '../../../services/adapters/config-kv'
 import type { ProductEventService } from '../../../services/domain/product-events'
 
 import { and, eq, isNull } from 'drizzle-orm'
 import { safeParse } from 'valibot'
 
-import { loadFluxPacks } from '../../../services/domain/payment'
 import { createBadRequestError, createInternalError, createServiceUnavailableError } from '../../../utils/error'
 import { resolveCheckoutRedirectBase } from '../../../utils/origin'
 import { CheckoutBodySchema } from '../schema'
@@ -43,11 +41,13 @@ export function createCheckoutOperation(
       throw createBadRequestError('Invalid checkout request', 'INVALID_REQUEST', parsed.issues)
 
     const { packKey, stripePriceId, currency } = parsed.output
-
-    const packs = await loadFluxPacks(configKV)
-    const pack = resolveCheckoutPack(packs, packKey, stripePriceId)
+    const packs = await configKV.getOptional('FLUX_PACKS') ?? []
+    const pack = resolveStripeCheckoutPack(packs, packKey, stripePriceId)
     if (!pack)
       throw createBadRequestError('Invalid pack', 'INVALID_PACKAGE', { packKey })
+    const priceId = pack.providers.stripe?.priceId
+    if (!priceId)
+      throw createServiceUnavailableError('Stripe pack mapping is missing', 'STRIPE_PACK_NOT_MAPPED', { packKey: pack.key })
 
     const redirectBase = resolveCheckoutRedirectBase(request, env.ADDITIONAL_TRUSTED_ORIGINS, env.WEB_APP_URL)
     const posthogIdentity = readPosthogIdentityHeaders(request)
@@ -73,10 +73,6 @@ export function createCheckoutOperation(
         isNull(schema.providerAccount.deletedAt),
       ))
       .limit(1)
-
-    const priceId = pack.providers.stripe?.priceId
-    if (!priceId)
-      throw createServiceUnavailableError('Stripe pack mapping is missing', 'STRIPE_PACK_NOT_MAPPED', { packKey: pack.key })
 
     const paymentMethods = await configKV.getOptional('STRIPE_PAYMENT_METHODS')
     const paymentMethodOptions = await configKV.getOptional('STRIPE_PAYMENT_METHOD_OPTIONS') ?? {}
@@ -142,11 +138,15 @@ export function createCheckoutOperation(
   }
 }
 
-function resolveCheckoutPack(packs: FluxPack[], packKey: string | undefined, stripePriceId: string | undefined) {
+function resolveStripeCheckoutPack(
+  packs: ConfigDefinitions['FLUX_PACKS'],
+  packKey: string | undefined,
+  stripePriceId: string | undefined,
+) {
   if (packKey)
-    return packs.find(pack => pack.key === packKey)
+    return packs.find(item => item.key === packKey)
   if (stripePriceId)
-    return packs.find(pack => pack.providers.stripe?.priceId === stripePriceId)
+    return packs.find(item => item.providers.stripe?.priceId === stripePriceId)
   return undefined
 }
 

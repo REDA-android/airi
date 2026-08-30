@@ -1,7 +1,6 @@
 import type { Database } from '../../../libs/db'
-import type { ConfigKVService } from '../../adapters/config-kv'
 import type { BillingService } from '../billing/billing-service'
-import type { ClaimReceipt, FluxPack, SettleResult } from './types'
+import type { ClaimReceipt, SettleResult } from './types'
 
 import { useLogger } from '@guiiai/logg'
 import { and, eq, isNull } from 'drizzle-orm'
@@ -10,23 +9,9 @@ import { createInternalError } from '../../../utils/error'
 
 import * as schema from '../../../schemas/payment'
 
-export type { ClaimReceipt, FluxPack, SettleResult } from './types'
+export type { ClaimReceipt, SettleResult } from './types'
 
 const logger = useLogger('payment')
-
-/**
- * Loads the validated Flux pack catalog from ConfigKV.
- */
-export async function loadFluxPacks(configKV: ConfigKVService): Promise<FluxPack[]> {
-  const packs = await configKV.getOptional('FLUX_PACKS') ?? []
-  return packs.map(pack => ({
-    key: pack.key,
-    name: pack.name,
-    fluxAmount: pack.fluxAmount,
-    recommended: pack.recommended ?? false,
-    providers: pack.providers ?? {},
-  }))
-}
 
 /**
  * Payment CORE: pack grant and `payment_order` ownership.
@@ -171,7 +156,7 @@ export function createPaymentService(db: Database, billing: BillingService) {
 
     /**
      * Soft-deletes `payment_order` and `provider_account` rows.
-     * `flux_transaction` is not touched. Checkout sessions time out on Stripe.
+     * `flux_transaction` is not touched. Checkout sessions time out at the provider.
      */
     async deleteAllForUser(userId: string) {
       const now = new Date()
