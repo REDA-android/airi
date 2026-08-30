@@ -34,7 +34,8 @@ raw provider event. A channel maps the provider result onto a
 - `POST /api/v1/stripe/webhook` verifies the signature, maps the session
   to a `ClaimReceipt`, and calls `settle`. New Sessions carry
   `metadata.payment_order_id`. Sessions created before this migration
-  resolve the order by Stripe session id.
+  resolve the order by Stripe session id, then by a leftover
+  `stripe_checkout_session` row.
 - `POST /api/v1/steam/checkout` inserts the pending order, then calls
   ISteamMicroTxn InitTxn with a web session. The response includes the Steam
   checkout URL. The client must have a linked Steam account.
