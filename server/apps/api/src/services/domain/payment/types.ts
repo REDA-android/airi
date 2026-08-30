@@ -1,11 +1,3 @@
-export const PAYMENT_PROVIDERS = ['stripe', 'steam'] as const
-
-export type PaymentProviderName = typeof PAYMENT_PROVIDERS[number]
-
-export const PAYMENT_ORDER_STATUSES = ['pending', 'paid', 'canceled', 'expired'] as const
-
-export type PaymentOrderStatus = typeof PAYMENT_ORDER_STATUSES[number]
-
 export type ClaimStatus = 'paid' | 'canceled' | 'expired'
 
 /**
@@ -16,7 +8,7 @@ export type ClaimStatus = 'paid' | 'canceled' | 'expired'
  */
 export interface ClaimReceipt {
   kind: 'claim'
-  provider: 'stripe' | 'steam'
+  provider: 'stripe'
   paymentOrderId: string
   providerOrderId: string
   status: ClaimStatus
