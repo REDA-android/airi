@@ -21,6 +21,9 @@ function unusedWebhookDb(): Database {
 
 function createMockPayment(overrides: Partial<PaymentService> = {}): PaymentService {
   return {
+    openPending: vi.fn(async () => ({ id: 'po_mock' })),
+    bindProviderOrder: vi.fn(async () => {}),
+    abandon: vi.fn(async () => {}),
     settle: vi.fn(async () => ({ applied: true, userId: 'user-1', fluxAmount: 500, balanceAfter: 500 })),
     deleteAllForUser: vi.fn(),
     ...overrides,

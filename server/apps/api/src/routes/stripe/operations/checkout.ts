@@ -1,27 +1,24 @@
 import type Stripe from 'stripe'
 
-import type { Database } from '../../../libs/db'
 import type { Env } from '../../../libs/env'
 import type { RevenueMetrics } from '../../../otel'
 import type { ConfigDefinitions, ConfigKVService } from '../../../services/adapters/config-kv'
+import type { PaymentService } from '../../../services/domain/payment'
 import type { ProductEventService } from '../../../services/domain/product-events'
 
-import { and, eq, isNull } from 'drizzle-orm'
 import { safeParse } from 'valibot'
 
-import { createBadRequestError, createInternalError, createServiceUnavailableError } from '../../../utils/error'
+import { createBadRequestError, createServiceUnavailableError } from '../../../utils/error'
 import { resolveCheckoutRedirectBase } from '../../../utils/origin'
 import { CheckoutBodySchema } from '../schema'
 
-import * as schema from '../../../schemas/payment'
-
 /**
- * Inserts a pending `payment_order`, then creates a Stripe Checkout Session.
+ * Opens a pending order through Payment CORE, then creates a Stripe Checkout Session.
  *
  * `{ packKey }` and legacy `{ stripePriceId }` resolve a Flux pack.
  */
 export function createCheckoutOperation(
-  db: Database,
+  payment: PaymentService,
   stripe: Stripe | null,
   configKV: ConfigKVService,
   env: Env,
@@ -52,38 +49,22 @@ export function createCheckoutOperation(
     const redirectBase = resolveCheckoutRedirectBase(request, env.ADDITIONAL_TRUSTED_ORIGINS, env.WEB_APP_URL)
     const posthogIdentity = readPosthogIdentityHeaders(request)
 
-    const [order] = await db.insert(schema.paymentOrder).values({
+    const order = await payment.openPending({
       userId: user.id,
       provider: 'stripe',
-      status: 'pending',
       packKey: pack.key,
       fluxAmount: pack.fluxAmount,
       currency,
-    }).returning()
+    })
 
-    if (!order)
-      throw createInternalError('Failed to create payment order')
-
-    const [account] = await db
-      .select({ providerCustomerId: schema.providerAccount.providerCustomerId })
-      .from(schema.providerAccount)
-      .where(and(
-        eq(schema.providerAccount.userId, user.id),
-        eq(schema.providerAccount.provider, 'stripe'),
-        isNull(schema.providerAccount.deletedAt),
-      ))
-      .limit(1)
-
-    const paymentMethods = await configKV.getOptional('STRIPE_PAYMENT_METHODS')
-    const paymentMethodOptions = await configKV.getOptional('STRIPE_PAYMENT_METHOD_OPTIONS') ?? {}
     const sessionParams: Stripe.Checkout.SessionCreateParams = {
       line_items: [{ price: priceId, quantity: 1 }],
       mode: 'payment',
       allow_promotion_codes: true,
       success_url: `${redirectBase}/settings/flux?success=true`,
       cancel_url: `${redirectBase}/settings/flux?canceled=true`,
-      customer: account?.providerCustomerId ?? undefined,
-      customer_email: account?.providerCustomerId ? undefined : user.email,
+      customer: order.providerCustomerId,
+      customer_email: order.providerCustomerId ? undefined : user.email,
       metadata: {
         payment_order_id: order.id,
         userId: user.id,
@@ -94,6 +75,9 @@ export function createCheckoutOperation(
       },
     }
 
+    const paymentMethods = await configKV.getOptional('STRIPE_PAYMENT_METHODS')
+    const paymentMethodOptions = await configKV.getOptional('STRIPE_PAYMENT_METHOD_OPTIONS') ?? {}
+
     if (paymentMethods)
       sessionParams.payment_method_types = paymentMethods as Stripe.Checkout.SessionCreateParams['payment_method_types']
 
@@ -103,21 +87,25 @@ export function createCheckoutOperation(
     if (currency)
       sessionParams.currency = currency
 
-    const session = await stripe.checkout.sessions.create(sessionParams)
-    if (!session.url)
-      throw createServiceUnavailableError('Stripe checkout did not return a URL', 'STRIPE_CHECKOUT_URL_MISSING')
+    let session: Stripe.Checkout.Session
+    try {
+      session = await stripe.checkout.sessions.create(sessionParams)
+    }
+    catch (error) {
+      await payment.abandon(order.id).catch(() => {})
+      throw error
+    }
 
-    await db.update(schema.paymentOrder)
-      .set({
-        providerOrderId: session.id,
-        amount: session.amount_total ?? undefined,
-        currency: session.currency ?? currency,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(schema.paymentOrder.id, order.id),
-        isNull(schema.paymentOrder.providerOrderId),
-      ))
+    if (!session.url) {
+      await payment.abandon(order.id).catch(() => {})
+      throw createServiceUnavailableError('Stripe checkout did not return a URL', 'STRIPE_CHECKOUT_URL_MISSING')
+    }
+
+    await payment.bindProviderOrder(order.id, {
+      providerOrderId: session.id,
+      amount: session.amount_total ?? undefined,
+      currency: session.currency ?? currency,
+    })
 
     metrics?.stripeCheckoutCreated.add(1)
     void productEventService?.track({

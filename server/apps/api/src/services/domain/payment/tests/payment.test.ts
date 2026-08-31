@@ -49,15 +49,13 @@ describe('payment CORE', () => {
   })
 
   async function insertPendingOrder() {
-    const [order] = await db.insert(schema.paymentOrder).values({
+    return payment.openPending({
       userId: 'user-pay-1',
       provider: 'stripe',
-      status: 'pending',
       packKey: 'starter',
       fluxAmount: 500,
       currency: 'usd',
-    }).returning()
-    return order!
+    })
   }
 
   function paidReceipt(paymentOrderId: string, overrides: Partial<ClaimReceipt> = {}): ClaimReceipt {
@@ -172,5 +170,90 @@ describe('payment CORE', () => {
 
     const [deletedAccount] = await db.select().from(schema.providerAccount).where(eq(schema.providerAccount.userId, 'user-pay-1'))
     expect(deletedAccount?.deletedAt).toBeInstanceOf(Date)
+  })
+
+  it('openPending snapshots the pack and returns a live provider customer', async () => {
+    await db.insert(schema.providerAccount).values({
+      userId: 'user-pay-1',
+      provider: 'stripe',
+      providerCustomerId: 'cus_live',
+    })
+
+    const opened = await payment.openPending({
+      userId: 'user-pay-1',
+      provider: 'stripe',
+      packKey: 'starter',
+      fluxAmount: 500,
+      currency: 'usd',
+    })
+
+    expect(opened.providerCustomerId).toBe('cus_live')
+
+    const [row] = await db.select().from(schema.paymentOrder).where(eq(schema.paymentOrder.id, opened.id))
+    expect(row?.status).toBe('pending')
+    expect(row?.packKey).toBe('starter')
+    expect(row?.fluxAmount).toBe(500)
+    expect(row?.providerOrderId).toBeNull()
+  })
+
+  it('openPending ignores a soft-deleted provider account', async () => {
+    await db.insert(schema.providerAccount).values({
+      userId: 'user-pay-1',
+      provider: 'stripe',
+      providerCustomerId: 'cus_deleted',
+      deletedAt: new Date(),
+    })
+
+    const opened = await payment.openPending({
+      userId: 'user-pay-1',
+      provider: 'stripe',
+      packKey: 'starter',
+      fluxAmount: 500,
+    })
+
+    expect(opened.providerCustomerId).toBeUndefined()
+  })
+
+  it('bindProviderOrder does not overwrite an id that settle already stored', async () => {
+    const opened = await insertPendingOrder()
+    await payment.settle(paidReceipt(opened.id, { providerOrderId: 'cs_settle' }))
+
+    await payment.bindProviderOrder(opened.id, {
+      providerOrderId: 'cs_bind',
+      amount: 999,
+    })
+
+    const [row] = await db.select().from(schema.paymentOrder).where(eq(schema.paymentOrder.id, opened.id))
+    expect(row?.status).toBe('paid')
+    expect(row?.providerOrderId).toBe('cs_settle')
+    expect(row?.amount).toBe(500)
+  })
+
+  it('abandon marks a pending order canceled without crediting Flux', async () => {
+    const opened = await insertPendingOrder()
+
+    await payment.abandon(opened.id)
+
+    const [row] = await db.select().from(schema.paymentOrder).where(eq(schema.paymentOrder.id, opened.id))
+    expect(row?.status).toBe('canceled')
+
+    const ledger = await db.select().from(schema.fluxTransaction).where(eq(schema.fluxTransaction.userId, 'user-pay-1'))
+    expect(ledger).toHaveLength(0)
+  })
+
+  it('abandon does not reverse a paid order', async () => {
+    const opened = await insertPendingOrder()
+    await payment.settle(paidReceipt(opened.id))
+
+    await payment.abandon(opened.id)
+
+    const result = await payment.settle(paidReceipt(opened.id))
+    expect(result.applied).toBe(false)
+
+    const [row] = await db.select().from(schema.paymentOrder).where(eq(schema.paymentOrder.id, opened.id))
+    expect(row?.status).toBe('paid')
+
+    const [flux] = await db.select().from(schema.userFlux).where(eq(schema.userFlux.userId, 'user-pay-1'))
+    expect(flux?.flux).toBe(500)
   })
 })

@@ -45,13 +45,13 @@ function createPacksConfigKV(packs: ConfigDefinitions['FLUX_PACKS']): ConfigKVSe
 }
 
 function createCheckout(
-  db: Database,
+  payment: ReturnType<typeof createPaymentService>,
   stripe: { checkout: { sessions: { create: ReturnType<typeof vi.fn> } } },
   packs: ConfigDefinitions['FLUX_PACKS'] = [starterPack],
   productEventService: { track: ReturnType<typeof vi.fn> } | null = null,
 ) {
   return createCheckoutOperation(
-    db,
+    payment,
     stripe as never,
     createPacksConfigKV(packs),
     testEnv,
@@ -101,7 +101,7 @@ describe('stripe checkout', () => {
       }
     })
 
-    const checkout = createCheckout(db, { checkout: { sessions: { create } } })
+    const checkout = createCheckout(payment, { checkout: { sessions: { create } } })
 
     const result = await checkout(
       testUser,
@@ -126,7 +126,7 @@ describe('stripe checkout', () => {
       currency: 'usd',
     }))
 
-    const checkout = createCheckout(db, { checkout: { sessions: { create } } })
+    const checkout = createCheckout(payment, { checkout: { sessions: { create } } })
 
     await checkout(
       testUser,
@@ -163,7 +163,7 @@ describe('stripe checkout', () => {
       }
     })
 
-    const checkout = createCheckout(db, { checkout: { sessions: { create } } })
+    const checkout = createCheckout(payment, { checkout: { sessions: { create } } })
 
     await checkout(
       testUser,
@@ -188,7 +188,7 @@ describe('stripe checkout', () => {
     }))
     const productEventService = { track: vi.fn() }
 
-    const checkout = createCheckout(db, { checkout: { sessions: { create } } }, [starterPack], productEventService)
+    const checkout = createCheckout(payment, { checkout: { sessions: { create } } }, [starterPack], productEventService)
 
     await checkout(
       testUser,
@@ -213,5 +213,73 @@ describe('stripe checkout', () => {
         posthog_distinct_id: 'anon-browser-1',
       }),
     }))
+  })
+
+  it('reuses the live Stripe customer on the Checkout Session', async () => {
+    await db.insert(schema.providerAccount).values({
+      userId: 'user-pay-1',
+      provider: 'stripe',
+      providerCustomerId: 'cus_existing',
+    })
+
+    const create = vi.fn(async (params: { customer?: string, customer_email?: string }) => {
+      expect(params.customer).toBe('cus_existing')
+      expect(params.customer_email).toBeUndefined()
+      return {
+        id: 'cs_test_customer',
+        url: 'https://checkout.stripe.test/cs_test_customer',
+        amount_total: 500,
+        currency: 'usd',
+      }
+    })
+
+    const checkout = createCheckout(payment, { checkout: { sessions: { create } } })
+
+    await checkout(
+      testUser,
+      { packKey: 'starter' },
+      new Request('http://localhost/api/v1/stripe/checkout'),
+    )
+
+    expect(create).toHaveBeenCalled()
+  })
+
+  it('abandons the pending order when Checkout Session create fails', async () => {
+    const create = vi.fn(async () => {
+      throw new Error('stripe down')
+    })
+    const checkout = createCheckout(payment, { checkout: { sessions: { create } } })
+
+    await expect(checkout(
+      testUser,
+      { packKey: 'starter' },
+      new Request('http://localhost/api/v1/stripe/checkout'),
+    )).rejects.toThrow('stripe down')
+
+    const [order] = await db.select().from(schema.paymentOrder).where(eq(schema.paymentOrder.userId, 'user-pay-1'))
+    expect(order?.status).toBe('canceled')
+    expect(order?.providerOrderId).toBeNull()
+  })
+
+  it('abandons the pending order when Checkout Session has no URL', async () => {
+    const create = vi.fn(async () => ({
+      id: 'cs_test_nourl',
+      url: null,
+      amount_total: 500,
+      currency: 'usd',
+    }))
+    const checkout = createCheckout(payment, { checkout: { sessions: { create } } })
+
+    await expect(checkout(
+      testUser,
+      { packKey: 'starter' },
+      new Request('http://localhost/api/v1/stripe/checkout'),
+    )).rejects.toMatchObject({
+      statusCode: 503,
+      errorCode: 'STRIPE_CHECKOUT_URL_MISSING',
+    })
+
+    const [order] = await db.select().from(schema.paymentOrder).where(eq(schema.paymentOrder.userId, 'user-pay-1'))
+    expect(order?.status).toBe('canceled')
   })
 })

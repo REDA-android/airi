@@ -1,6 +1,12 @@
 import type { Database } from '../../../libs/db'
 import type { BillingService } from '../billing/billing-service'
-import type { ClaimReceipt, SettleResult } from './types'
+import type {
+  BindProviderOrderInput,
+  ClaimReceipt,
+  OpenPendingInput,
+  PendingPaymentOrder,
+  SettleResult,
+} from './types'
 
 import { useLogger } from '@guiiai/logg'
 import { and, eq, isNull } from 'drizzle-orm'
@@ -9,7 +15,13 @@ import { createInternalError } from '../../../utils/error'
 
 import * as schema from '../../../schemas/payment'
 
-export type { ClaimReceipt, SettleResult } from './types'
+export type {
+  BindProviderOrderInput,
+  ClaimReceipt,
+  OpenPendingInput,
+  PendingPaymentOrder,
+  SettleResult,
+} from './types'
 
 const logger = useLogger('payment')
 
@@ -17,6 +29,11 @@ const logger = useLogger('payment')
  * Payment CORE: pack grant and `payment_order` ownership.
  *
  * Call stack:
+ *
+ * Stripe `POST /checkout`
+ * -> {@link createPaymentService} `openPending`
+ * -> channel creates the Checkout Session
+ * -> {@link createPaymentService} `bindProviderOrder`
  *
  * Stripe `POST /webhook` (after signature verify)
  * -> channel maps session to {@link ClaimReceipt}
@@ -49,6 +66,20 @@ export function createPaymentService(db: Database, billing: BillingService) {
       provider,
       providerCustomerId,
     }).onConflictDoNothing()
+  }
+
+  async function findLiveProviderCustomer(userId: string, provider: string) {
+    const [account] = await db
+      .select({ providerCustomerId: schema.providerAccount.providerCustomerId })
+      .from(schema.providerAccount)
+      .where(and(
+        eq(schema.providerAccount.userId, userId),
+        eq(schema.providerAccount.provider, provider),
+        isNull(schema.providerAccount.deletedAt),
+      ))
+      .limit(1)
+
+    return account?.providerCustomerId
   }
 
   async function claimExistingOrder(receipt: ClaimReceipt): Promise<SettleResult> {
@@ -150,6 +181,59 @@ export function createPaymentService(db: Database, billing: BillingService) {
   }
 
   return {
+    async openPending(input: OpenPendingInput): Promise<PendingPaymentOrder> {
+      const [row] = await db.insert(schema.paymentOrder).values({
+        userId: input.userId,
+        provider: input.provider,
+        status: 'pending',
+        packKey: input.packKey,
+        fluxAmount: input.fluxAmount,
+        currency: input.currency,
+      }).returning()
+
+      if (!row)
+        throw createInternalError('Failed to create payment order')
+
+      const providerCustomerId = await findLiveProviderCustomer(input.userId, input.provider)
+      return { id: row.id, providerCustomerId }
+    },
+
+    /**
+     * Stores the provider checkout id when the row still has none.
+     * A concurrent settle that already wrote the id wins.
+     */
+    async bindProviderOrder(orderId: string, input: BindProviderOrderInput): Promise<void> {
+      await db.update(schema.paymentOrder)
+        .set({
+          providerOrderId: input.providerOrderId,
+          amount: input.amount,
+          currency: input.currency,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(schema.paymentOrder.id, orderId),
+          isNull(schema.paymentOrder.providerOrderId),
+          isNull(schema.paymentOrder.deletedAt),
+        ))
+    },
+
+    /**
+     * Marks a pending order canceled. Does not credit Flux.
+     * No-op when the order is no longer pending.
+     */
+    async abandon(orderId: string): Promise<void> {
+      await db.update(schema.paymentOrder)
+        .set({
+          status: 'canceled',
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(schema.paymentOrder.id, orderId),
+          eq(schema.paymentOrder.status, 'pending'),
+          isNull(schema.paymentOrder.deletedAt),
+        ))
+    },
+
     async settle(receipt: ClaimReceipt): Promise<SettleResult> {
       return claimExistingOrder(receipt)
     },

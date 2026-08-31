@@ -34,7 +34,7 @@ export function createStripeRoutes(
   rateLimitMetrics: RateLimitMetrics | null,
   productEventService: ProductEventService | null,
 ) {
-  const checkout = createCheckoutOperation(db, stripe, configKV, env, metrics, productEventService)
+  const checkout = createCheckoutOperation(payment, stripe, configKV, env, metrics, productEventService)
   const webhook = createWebhookOperation(stripe, env.STRIPE_WEBHOOK_SECRET ?? null, payment, db, metrics, productEventService)
 
   return new Hono<HonoEnv>()
