@@ -39,23 +39,30 @@ pnpm dev:backend
 For source-level debugging, start `@proj-airi/api-server` and
 `@proj-airi/auth-server` separately instead.
 
-- `@proj-airi/api-server` (this package): listens on `PORT=3000` (local `http://localhost:3000` or via Caddy edge at `https://dev.airi.moeru.ai/api/v1`).
-- `@proj-airi/auth-server`: listens on `PORT=3001` (local `https://localhost:3001` or via Caddy edge at `https://dev.airi.moeru.ai/api/auth`).
-- `server/dev/caddy`: terminates HTTPS on `dev.airi.moeru.ai` with local mkcert certificates, routing `/api/auth/*` to auth and everything else to api.
-- `server/docker-compose.yaml`: starts Postgres and Redis.
-- `pnpm dev:backend` at the repo root starts Caddy and the containers, then runs both servers under `dotenvx` with `.env.local`.
+`server/docker-compose.yaml` exposes the local Caddy gateway at `http://localhost:6112` and keeps
+the API and Auth container ports private.
 
-## Configuration
+## Service boundaries
 
-Environment variables are validated with Valibot in `src/libs/env.ts`.
+- `AUTH_SERVER_URL` is Auth's canonical public issuer origin used for JWKS,
+  issuer, and audience validation. It must exactly equal Auth's `PUBLIC_URL`.
+- `/internal/auth/*` is reachable only on the deployment's trusted private
+  network. The public edge must reject `/internal/*` and the API service must
+  not have its own public ingress.
+- `AUTH_SERVER_INTERNAL_URL` optionally sends JWKS fetches directly to Auth on
+  the private network while issuer and audience remain `AUTH_SERVER_URL`.
+- Auth tables and principal types come from `@proj-airi/auth-shared`; no module
+  under `server/apps/auth` is imported.
 
-Key variables:
+## Railway
 
-- `DATABASE_URL`: PostgreSQL connection string.
-- `REDIS_URL`: Redis connection string.
-- `AUTH_SERVER_URL`: Auth's public issuer origin (defaults to `http://localhost:3000`). This value must equal Auth's `PUBLIC_URL`. Expected JWT `iss` is `AUTH_SERVER_URL` plus `/api/auth`. Expected JWT `aud` is `AUTH_SERVER_URL`.
-- `AUTH_SERVER_INTERNAL_URL`: Optional private Auth origin. When this variable is set, JWKS fetch uses that origin plus `/api/auth/jwks`. When this variable is unset, JWKS fetch uses `AUTH_SERVER_URL` plus `/api/auth/jwks`. Issuer and audience stay on `AUTH_SERVER_URL`.
-- `PORT`: HTTP port (defaults to 3000).
-- `HOST`: Bind host (defaults to `0.0.0.0`).
+Deploy this as the Resource API Railway service with Config File Path
+`/server/apps/api/railway.toml`; keep the service Root Directory at the
+repository root because the Dockerfile copies shared workspace packages. The
+config owns its Dockerfile, start command, `/readyz` healthcheck, and the
+watch patterns for every copied build input.
 
-On Railway, set `AUTH_SERVER_INTERNAL_URL` from Auth's private domain. This variable is only the private JWKS route. `AUTH_SERVER_URL` remains the public Auth issuer URL. See [`server/README.md`](../../README.md#railway-deployment) for the complete cross-service variable contract.
+Set `AUTH_SERVER_INTERNAL_URL` from Auth's Railway private domain. It is only
+the private JWKS route; `AUTH_SERVER_URL` remains the public Auth issuer URL.
+See [`server/README.md`](../../README.md#railway-deployment) for the complete
+cross-service variable and migration contract.
