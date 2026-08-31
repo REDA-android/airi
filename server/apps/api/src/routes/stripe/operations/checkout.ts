@@ -92,12 +92,12 @@ export function createCheckoutOperation(
       session = await stripe.checkout.sessions.create(sessionParams)
     }
     catch (error) {
-      await payment.abandon(order.id).catch(() => {})
+      await payment.abandon(order.id)
       throw error
     }
 
     if (!session.url) {
-      await payment.abandon(order.id).catch(() => {})
+      await payment.abandon(order.id)
       throw createServiceUnavailableError('Stripe checkout did not return a URL', 'STRIPE_CHECKOUT_URL_MISSING')
     }
 

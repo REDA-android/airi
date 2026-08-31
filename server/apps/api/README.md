@@ -16,31 +16,10 @@ auth/OIDC routes.
 
 `src/services/domain/payment` owns pack grant and `payment_order` rows.
 CORE exposes `openPending`, `bindProviderOrder`, `abandon`, `settle`,
-and `deleteAllForUser`.
-
-Checkout, package list, and session mapping live in the Stripe channel.
-Each provider keeps its own HTTP paths. Stripe stays on
-`/api/v1/stripe/*`. CORE never sees a raw provider event. A channel maps
-the provider result onto a `ClaimReceipt`, then calls `settle`.
-
-- `openPending` inserts a pending order and snapshots the pack.
-  It returns a live provider customer id when `provider_account` exists.
-- `bindProviderOrder` stores the provider checkout id when the row still
-  has none. A concurrent `settle` that already wrote the id wins.
-- `abandon` marks a pending order canceled when provider checkout fails.
-- `settle` claims a pending order (`pending` to `paid`). One transaction
-  writes `credited_at` and calls `creditFlux`. Replay returns `applied: false`.
-- Pack snapshots (`pack_key`, `flux_amount`) live on the order row.
-- Channels read `FLUX_PACKS` from ConfigKV. Stripe display prices
-  come from Stripe Price objects (Redis cache).
-- `POST /api/v1/stripe/checkout` calls `openPending`, creates the Checkout
-  Session, then calls `bindProviderOrder`. Session create failure calls
-  `abandon`.
-- `POST /api/v1/stripe/webhook` verifies the signature, maps the session
-  to a `ClaimReceipt`, and calls `settle`. New Sessions carry
-  `metadata.payment_order_id`. Sessions created before this migration
-  resolve the order by Stripe session id, then by a leftover
-  `stripe_checkout_session` row.
+and `deleteAllForUser`. Checkout and package list live in the Stripe
+channel on `/api/v1/stripe/*`. CORE never sees a raw provider event. A
+channel maps the provider result onto a `ClaimReceipt`, then calls
+`settle`.
 
 ## Run locally
 
