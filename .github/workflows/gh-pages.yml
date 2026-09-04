@@ -41,7 +41,7 @@ jobs:
         run: pnpm run build:packages
 
       - name: Build Interface
-        run: pnpm --filter @proj-airi/component-calling exec vite build --base=/airi/
+        run: pnpm --filter @proj-airi/stage-web exec vite build --base=/airi/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -49,7 +49,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './apps/component-calling/dist'
+          path: './apps/stage-web/dist'
 
       - name: Deploy to GitHub Pages
         id: deployment
