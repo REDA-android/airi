@@ -1,0 +1,74 @@
+{
+  "name": "@google/jules-fleet",
+  "version": "0.0.1-experimental.34",
+  "type": "module",
+  "description": "Fleet orchestration tools for Jules — analyze, dispatch, merge, init, configure",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/google-labs-code/jules-sdk.git"
+  },
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "jules-fleet": "dist/cli/index.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:js": "bun run build.ts",
+    "build:types": "tsc",
+    "build": "bun run build:js && bun run build:types",
+    "prepublishOnly": "node ../../scripts/check-workspace-refs.mjs && bun run build && vitest run",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "jules",
+    "fleet",
+    "orchestration",
+    "github",
+    "automation"
+  ],
+  "author": "Google LLC",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "registry": "https://wombat-dressing-room.appspot.com",
+    "access": "public"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.0.1",
+    "@google/jules-merge": "^0.0.2",
+    "@google/jules-sdk": "^0.1.0",
+    "@octokit/auth-app": "^8.2.0",
+    "citty": "^0.1.6",
+    "glob": "^13.0.6",
+    "libsodium-wrappers": "^0.8.2",
+    "octokit": "^4.1.3",
+    "yaml": "^2.8.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "@types/libsodium-wrappers": "^0.8.2",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "main": "index.js",
+  "bugs": {
+    "url": "https://github.com/google-labs-code/jules-sdk/issues"
+  },
+  "homepage": "https://github.com/google-labs-code/jules-sdk#readme"
+}

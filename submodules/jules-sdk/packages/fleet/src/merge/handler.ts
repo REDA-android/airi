@@ -1,0 +1,529 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import type { Octokit } from 'octokit';
+import type {
+  MergeInput,
+  MergeResult,
+  MergeSpec,
+} from './spec.js';
+import type { PR } from '../shared/schemas/pr.js';
+import type { FleetEmitter } from '../shared/events.js';
+import { ok, fail } from '../shared/result/index.js';
+import { jules } from '@google/jules-sdk';
+import { selectByLabel } from './select/by-label.js';
+import { selectByFleetRun } from './select/by-fleet-run.js';
+import { updateBranch } from './ops/update-branch.js';
+import { waitForCI } from './ops/wait-for-ci.js';
+import { squashMerge } from './ops/squash-merge.js';
+import { redispatch } from './ops/redispatch.js';
+import { planMergeOrder } from './ops/plan-merge-order.js';
+import { batchResolveConflicts } from './ops/resolve-conflicts.js';
+import { ConflictEscalationHandler } from './escalation/handler.js';
+import { ConflictResolutionHandler } from './conflict-resolution/handler.js';
+import type { SessionDispatcher } from '../shared/session-dispatcher.js';
+
+export interface MergeHandlerDeps {
+  octokit: Octokit;
+  emit?: FleetEmitter;
+  sleep?: (ms: number) => Promise<void>;
+  /** Optional — enables conflict notification before redispatch */
+  dispatcher?: SessionDispatcher;
+}
+
+/** Default delay helper */
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((r) => setTimeout(r, ms));
+
+/**
+ * MergeHandler implements the sequential merge loop.
+ * All GitHub interactions go through Octokit REST API.
+ * Never throws — all errors returned as Result.
+ */
+export class MergeHandler implements MergeSpec {
+  private octokit: Octokit;
+  private emit: FleetEmitter;
+  private sleep: (ms: number) => Promise<void>;
+  private dispatcher?: SessionDispatcher;
+
+  constructor(deps: MergeHandlerDeps) {
+    this.octokit = deps.octokit;
+    this.emit = deps.emit ?? (() => { });
+    this.sleep = deps.sleep ?? defaultSleep;
+    this.dispatcher = deps.dispatcher;
+  }
+
+  async execute(input: MergeInput): Promise<MergeResult> {
+    try {
+      // 1. Select PRs based on mode
+      const prs = await this.selectPRs(input);
+
+      if (prs.length === 0) {
+        this.emit({ type: 'merge:no-prs' });
+        return ok({ merged: [], skipped: [], redispatched: [] });
+      }
+
+      this.emit({
+        type: 'merge:start',
+        owner: input.owner,
+        repo: input.repo,
+        mode: input.mode,
+        prCount: prs.length,
+      });
+
+      const merged: number[] = [];
+      const skipped: number[] = [];
+      const redispatched: Array<{ oldPr: number; sessionId?: string }> = [];
+
+      // 2. Plan merge order if batch mode is enabled
+      if (input.redispatch) {
+        try {
+          const plan = await planMergeOrder(
+            this.octokit,
+            input.owner,
+            input.repo,
+            prs,
+          );
+
+          this.emit({
+            type: 'merge:plan:computed',
+            independent: plan.independent.map((p) => p.number),
+            conflictGroups: plan.conflictGroups.map((g) =>
+              g.prs.map((p) => p.number),
+            ),
+          });
+
+          // 2a. Merge independent PRs first (no overlap between them)
+          for (const pr of plan.independent) {
+            const result = await this.mergeSinglePR(pr, input);
+            if (result.merged) {
+              merged.push(pr.number);
+            } else if (result.notified) {
+              // Session was notified — skip, cron will retry
+              skipped.push(pr.number);
+            } else if (result.redispatched) {
+              redispatched.push({ oldPr: pr.number, sessionId: result.sessionId });
+              skipped.push(pr.number);
+            } else {
+              skipped.push(pr.number);
+            }
+            await this.sleep(5_000);
+          }
+
+          // 2b. Handle conflict groups — try each PR individually first
+          for (const group of plan.conflictGroups) {
+            const failedPRs: PR[] = [];
+
+            for (const pr of group.prs) {
+              const result = await this.mergeSinglePR(pr, input);
+              if (result.merged) {
+                merged.push(pr.number);
+              } else {
+                failedPRs.push(pr);
+              }
+              await this.sleep(5_000);
+            }
+
+            // Batch resolve only the PRs that actually conflicted
+            if (failedPRs.length > 0) {
+              const resolveResult = await batchResolveConflicts(
+                this.octokit,
+                {
+                  owner: input.owner,
+                  repo: input.repo,
+                  baseBranch: input.baseBranch,
+                  conflictingPRs: failedPRs,
+                  sharedFiles: group.sharedFiles,
+                  recentlyMerged: merged,
+                },
+                this.emit,
+                jules,
+              );
+
+              if (resolveResult.success) {
+                if (!resolveResult.skipped) {
+                  for (const pr of failedPRs) {
+                    redispatched.push({
+                      oldPr: pr.number,
+                      sessionId: resolveResult.sessionId,
+                    });
+                    skipped.push(pr.number);
+                  }
+                } else {
+                  // Dedup guard fired — just skip, don't redispatch
+                  for (const pr of failedPRs) {
+                    skipped.push(pr.number);
+                  }
+                }
+              } else {
+                // Fall back to per-PR redispatch
+                for (const pr of failedPRs) {
+                  const rdResult = await redispatch(
+                    this.octokit,
+                    input.owner,
+                    input.repo,
+                    pr,
+                    input.baseBranch,
+                    input.pollTimeoutSeconds,
+                    this.emit,
+                    this.sleep,
+                  );
+                  if (!rdResult.skipped) {
+                    redispatched.push({ oldPr: pr.number });
+                  }
+                  skipped.push(pr.number);
+                }
+              }
+            }
+          }
+
+          this.emit({ type: 'merge:done', merged, skipped, redispatched });
+          return ok({ merged, skipped, redispatched });
+        } catch {
+          // Planning failed — fall through to sequential merge
+        }
+      }
+
+      // 3. Sequential merge loop (original behavior / fallback)
+      for (const pr of prs) {
+        let currentPr = pr;
+        let retryCount = 0;
+        let prMerged = false;
+
+        while (!prMerged) {
+          this.emit({
+            type: 'merge:pr:processing',
+            number: currentPr.number,
+            title: currentPr.body?.split('\n')[0] ?? `PR #${currentPr.number}`,
+            retry: retryCount > 0 ? retryCount : undefined,
+          });
+
+          // Update branch from base to detect conflicts early
+          const updateResult = await updateBranch(
+            this.octokit,
+            input.owner,
+            input.repo,
+            currentPr.number,
+            this.emit,
+            this.sleep,
+          );
+
+          if (!updateResult.ok && updateResult.conflict) {
+            // If re-dispatch is disabled, fail immediately on conflict
+            if (!input.redispatch) {
+              return fail(
+                'CONFLICT_RETRIES_EXHAUSTED',
+                `Merge conflict detected for PR #${currentPr.number}. Use --redispatch to automatically retry.`,
+                false,
+                `Review PR: https://github.com/${input.owner}/${input.repo}/pull/${currentPr.number}`,
+              );
+            }
+
+            if (retryCount >= input.maxRetries) {
+              return fail(
+                'CONFLICT_RETRIES_EXHAUSTED',
+                `Conflict persists for PR #${currentPr.number} after ${input.maxRetries} retries. Human intervention required.`,
+                false,
+                `Review PR: https://github.com/${input.owner}/${input.repo}/pull/${currentPr.number}`,
+              );
+            }
+
+            const rdResult = await redispatch(
+              this.octokit,
+              input.owner,
+              input.repo,
+              currentPr,
+              input.baseBranch,
+              input.pollTimeoutSeconds,
+              this.emit,
+              this.sleep,
+            );
+
+            if (!rdResult.skipped) {
+              redispatched.push({
+                oldPr: currentPr.number,
+              });
+            }
+            skipped.push(currentPr.number);
+            break;
+          }
+
+          if (!updateResult.ok && !updateResult.conflict) {
+            return fail(
+              'GITHUB_API_ERROR',
+              `Failed to update branch for PR #${currentPr.number}: ${updateResult.error}`,
+              true,
+            );
+          }
+
+          // Wait for update to propagate
+          await this.sleep(5_000);
+
+          // Wait for CI
+          const ciResult = await waitForCI(
+            this.octokit,
+            input.owner,
+            input.repo,
+            currentPr.number,
+            input.maxCIWaitSeconds * 1000,
+            this.emit,
+            this.sleep,
+          );
+
+          if (ciResult === 'none') {
+            // No CI checks — proceed
+          } else if (ciResult === 'fail') {
+            // Check if this is an exhausted conflict — escalate if re-dispatch is on
+            if (input.redispatch) {
+              const escalation = new ConflictEscalationHandler(
+                this.octokit,
+                jules,
+              );
+              const escResult = await escalation.execute({
+                owner: input.owner,
+                repo: input.repo,
+                prNumber: currentPr.number,
+                baseBranch: input.baseBranch,
+                failureThreshold: 3,
+              });
+              if (escResult.success) {
+                this.emit({
+                  type: 'merge:conflict:escalated',
+                  prNumber: currentPr.number,
+                  sessionId: escResult.data.sessionId,
+                  failureCount: escResult.data.failureCount,
+                });
+                redispatched.push({
+                  oldPr: currentPr.number,
+                  sessionId: escResult.data.sessionId,
+                });
+                break;
+              }
+              // BELOW_THRESHOLD or other non-fatal — fall through to skip
+            }
+            this.emit({
+              type: 'merge:pr:skipped',
+              prNumber: currentPr.number,
+              reason: 'CI failure',
+            });
+            skipped.push(currentPr.number);
+            break;
+          } else if (ciResult === 'timeout') {
+            this.emit({
+              type: 'merge:pr:skipped',
+              prNumber: currentPr.number,
+              reason: 'CI timeout',
+            });
+            skipped.push(currentPr.number);
+            break;
+          }
+
+          // Merge
+          this.emit({ type: 'merge:pr:merging', prNumber: currentPr.number });
+          const mergeResult = await squashMerge(
+            this.octokit,
+            input.owner,
+            input.repo,
+            currentPr.number,
+          );
+
+          if (!mergeResult.ok) {
+            return fail(
+              'MERGE_FAILED',
+              `Failed to merge PR #${currentPr.number}: ${mergeResult.error}`,
+              false,
+            );
+          }
+
+          this.emit({ type: 'merge:pr:merged', prNumber: currentPr.number });
+          merged.push(currentPr.number);
+          prMerged = true;
+        }
+
+        // Brief pause for merge to propagate before next PR
+        await this.sleep(5_000);
+      }
+
+      this.emit({ type: 'merge:done', merged, skipped, redispatched });
+      return ok({ merged, skipped, redispatched });
+    } catch (error) {
+      return fail(
+        'UNKNOWN_ERROR',
+        error instanceof Error ? error.message : String(error),
+        false,
+      );
+    }
+  }
+
+  // ── Private helpers ────────────────────────────────────────────────
+
+  /**
+   * Attempts to merge a single PR through the full pipeline:
+   * update branch → wait CI → squash merge.
+   * Returns a simple status for the caller to handle.
+   */
+  private async mergeSinglePR(
+    pr: PR,
+    input: MergeInput,
+  ): Promise<{
+    merged: boolean;
+    redispatched?: boolean;
+    notified?: boolean;
+    sessionId?: string;
+  }> {
+    this.emit({
+      type: 'merge:pr:processing',
+      number: pr.number,
+      title: pr.body?.split('\n')[0] ?? `PR #${pr.number}`,
+    });
+
+    const updateResult = await updateBranch(
+      this.octokit,
+      input.owner,
+      input.repo,
+      pr.number,
+      this.emit,
+      this.sleep,
+    );
+
+    if (!updateResult.ok && updateResult.conflict) {
+      // If redispatch is enabled, close the PR and re-dispatch via Jules
+      if (input.redispatch) {
+        // Try conflict notification first (if dispatcher is available)
+        if (this.dispatcher) {
+          const notifyResult = await new ConflictResolutionHandler({
+            octokit: this.octokit,
+            dispatcher: this.dispatcher,
+            emit: this.emit,
+          }).execute({
+            owner: input.owner,
+            repo: input.repo,
+            baseBranch: input.baseBranch,
+            conflictingPR: {
+              number: pr.number,
+              branchName: pr.headRef,
+              body: pr.body ?? undefined,
+            },
+            conflictingFiles: await this.getPRFiles(input.owner, input.repo, pr.number),
+            peerPRs: [],
+            maxNotifications: 3,
+          });
+
+          if (notifyResult.success) {
+            // Session was notified — skip this PR, cron will retry
+            return { merged: false, notified: true, sessionId: notifyResult.data.sessionId };
+          }
+          // Notification failed (fallbackToRedispatch) — fall through to redispatch
+        }
+
+        const result = await redispatch(
+          this.octokit,
+          input.owner,
+          input.repo,
+          pr,
+          input.baseBranch,
+          input.pollTimeoutSeconds,
+          this.emit,
+          this.sleep,
+        );
+        if (result.skipped) {
+          return { merged: false };
+        }
+        return {
+          merged: false,
+          redispatched: true,
+        };
+      }
+      return { merged: false };
+    }
+
+    if (!updateResult.ok && !updateResult.conflict) {
+      return { merged: false };
+    }
+
+    await this.sleep(5_000);
+
+    const ciResult = await waitForCI(
+      this.octokit,
+      input.owner,
+      input.repo,
+      pr.number,
+      input.maxCIWaitSeconds * 1000,
+      this.emit,
+      this.sleep,
+    );
+
+    if (ciResult === 'fail' || ciResult === 'timeout') {
+      this.emit({
+        type: 'merge:pr:skipped',
+        prNumber: pr.number,
+        reason: ciResult === 'fail' ? 'CI failure' : 'CI timeout',
+      });
+      return { merged: false };
+    }
+
+    this.emit({ type: 'merge:pr:merging', prNumber: pr.number });
+    const mergeResult = await squashMerge(
+      this.octokit,
+      input.owner,
+      input.repo,
+      pr.number,
+    );
+
+    if (!mergeResult.ok) {
+      return { merged: false };
+    }
+
+    this.emit({ type: 'merge:pr:merged', prNumber: pr.number });
+    return { merged: true };
+  }
+
+  private async selectPRs(input: MergeInput): Promise<PR[]> {
+    if (input.mode === 'fleet-run') {
+      return selectByFleetRun(
+        this.octokit,
+        input.owner,
+        input.repo,
+        input.baseBranch,
+        input.runId!,
+      );
+    }
+    return selectByLabel(
+      this.octokit,
+      input.owner,
+      input.repo,
+      input.baseBranch,
+    );
+  }
+
+  /**
+   * Fetches the list of files changed by a PR.
+   */
+  private async getPRFiles(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<string[]> {
+    try {
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+      return files.map((f: any) => f.filename);
+    } catch {
+      return []; // Non-fatal
+    }
+  }
+}

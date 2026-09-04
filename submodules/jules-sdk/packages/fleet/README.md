@@ -1,0 +1,296 @@
+# Jules Fleet
+
+> Status: Very Experimental. A just for fun prototype.
+
+Continuous analysis and development, driven by simple goal files.
+
+Fleet connects your development goals to Jules. 
+
+1. Write goals as markdown files describing what you want — improved test coverage, API drift detection, triaging open issues. 
+
+2. Fleet continuously analyzes your repository against those goals, creates actionable issues, dispatches Jules sessions to implement them, and sequentially merges the resulting PRs
+
+The entire pipeline runs on a schedule via GitHub Actions, or on-demand from the CLI.
+
+## Define a goal
+
+Create a markdown file in `.fleet/goals/` describing what you want analyzed. Each goal produces a Jules analyzer session that reviews the repository and creates issues.
+
+```markdown
+---
+milestone: "1"
+---
+
+# Improve test coverage
+
+Find modules with low test coverage and add missing unit tests.
+
+## Tools
+- Test Coverage: `npx vitest --coverage --json`
+
+## Assessment Hints
+- Focus on uncovered error handling paths
+- Look for edge cases in utility functions
+
+## Insight Hints
+- Report on overall test coverage metrics
+- Note modules below 60% coverage
+
+## Constraints
+- Do NOT duplicate tests that already exist
+- Use the existing test patterns in the repo
+- Keep tasks small — one module per issue
+```
+
+## How the pipeline works
+
+1. **Analyze** — Fleet dispatches Jules analyzer sessions with your goal files. Each session reviews the repository and creates GitHub issues labeled `fleet`.
+2. **Dispatch** — Fleet finds undispatched `fleet` issues in a milestone and fires a Jules worker session for each. Each session works autonomously and creates a PR.
+3. **Merge** — Fleet merges the resulting PRs one at a time, updating each branch and waiting for CI before the next merge.
+
+If a merge conflict is detected, the fleet closes the conflicting PR, re-dispatches the task against the current base branch, and retries.
+
+## Set up a repository
+
+```bash
+npx @google/jules-fleet init
+```
+
+The interactive wizard will:
+1. **Detect the repo** from your git remote (or pass `--repo owner/repo`)
+2. **Configure auth** — choose GitHub App (recommended) or personal access token
+   - For GitHub App: enter your app slug and path to the `.pem` private key file. Fleet auto-detects the App ID and Installation ID.
+3. **Upload secrets** — `JULES_API_KEY` and app credentials are uploaded to GitHub Actions secrets
+4. **Create a PR** with three workflow files and an example goal
+5. **Create labels** — `fleet` and `fleet-merge-ready`
+
+If workflow files already exist (re-initialization), the wizard prompts to overwrite them with the latest templates.
+
+## Pipeline Cadence
+
+Fleet runs on a configurable schedule. The `--interval` flag (in minutes) controls how often the analyze → dispatch → merge pipeline runs.
+
+### Presets
+
+| Preset | Interval | What it means |
+|---|---|---|
+| Every 30 minutes | `--interval 30` | High velocity — fast signal, more API and Actions usage |
+| Every hour | `--interval 60` | Balanced — good signal, moderate usage |
+| **Every 6 hours** (default) | `--interval 360` | Standard — reliable daily cadence |
+| Every 12 hours | `--interval 720` | Conservative — twice daily |
+| Every 24 hours | `--interval 1440` | Minimal — once daily |
+
+The interactive wizard presents these as options with a "Custom" choice for any value ≥ 5 minutes.
+
+### How interval affects workflows
+
+The three scheduled workflows are staggered automatically:
+
+- **Analyze** runs at the base interval — scans goals and creates issues
+- **Dispatch** runs offset by half the interval — picks up new issues between analyze runs
+- **Merge** runs at half the main interval — keeps the merge queue moving
+
+Conflict detection is PR-triggered (not scheduled) and is unaffected by the interval setting.
+
+### Choosing the right interval
+
+**Faster intervals** (30min–1h):
+- PRs land quickly, feedback loops are tight
+- Higher GitHub API usage and Actions minutes consumption
+- Best for active development sprints or small repos
+
+**Slower intervals** (12h–24h):
+- Lower API and Actions cost
+- PRs queue up and feedback is delayed
+- Best for maintenance repos or cost-sensitive environments
+
+**Recommended by team size:**
+- Solo / small team → 60–360 minutes
+- Medium team (5–15) → 360 minutes (default)
+- Large org / many repos → 720–1440 minutes
+
+> **Note:** GitHub Actions enforces a 5-minute minimum for scheduled workflows. Intervals below 5 minutes will be rejected.
+
+## CLI Reference
+
+### `jules-fleet init`
+
+Scaffold a repository for fleet workflows by creating a PR with the necessary files.
+
+```
+jules-fleet init [options]
+
+Options:
+  --repo <owner/repo>    Repository (auto-detected from git remote)
+  --base <branch>        Base branch for the PR (default: main)
+  --interval <minutes>   Pipeline cadence in minutes (default: 360)
+  --non-interactive      Disable wizard prompts — all inputs via flags/env vars
+  --dry-run              Show what would be created without making changes
+  --upload-secrets       Upload secrets to GitHub Actions (default: true)
+```
+
+Files added by the PR:
+- `.github/workflows/fleet-analyze.yml`
+- `.github/workflows/fleet-dispatch.yml`
+- `.github/workflows/fleet-merge.yml`
+- `.fleet/goals/example.md`
+
+Labels created: `fleet`, `fleet-merge-ready`
+
+### `jules-fleet analyze`
+
+Read goal files, fetch milestone context, and fire Jules analyzer sessions.
+
+```
+jules-fleet analyze [options]
+
+Options:
+  --goal <path>              Path to a specific goal file
+  --goals-dir <dir>          Directory to discover goals from (default: .fleet/goals)
+  --milestone <id>           Milestone ID to scope context
+  --owner <owner>            Repository owner (auto-detected from git remote)
+  --repo <repo>              Repository name (auto-detected from git remote)
+```
+
+Each goal file produces a Jules session that analyzes the repository and creates signals (GitHub issues labeled `fleet`).
+
+### `jules-fleet dispatch`
+
+Find undispatched fleet issues in a milestone and fire Jules worker sessions for each.
+
+```
+jules-fleet dispatch --milestone <id> [options]
+
+Options:
+  --milestone <id> (required)   Milestone ID to scope dispatch
+  --owner <owner>               Repository owner (auto-detected from git remote)
+  --repo <repo>                 Repository name (auto-detected from git remote)
+```
+
+Issues are skipped if they already have a dispatch event or linked PRs.
+
+### `jules-fleet merge`
+
+Sequentially merge PRs that are ready, updating branches and waiting for CI between each merge.
+
+```
+jules-fleet merge --owner <owner> --repo <repo> [options]
+
+Options:
+  --mode <label|fleet-run>   PR selection mode (default: label)
+  --run-id <id>              Fleet run ID (required for fleet-run mode)
+  --base <branch>            Base branch (default: main)
+  --admin                    Bypass branch protection
+  --re-dispatch              Re-dispatch on merge conflict (requires JULES_API_KEY)
+```
+
+**Label mode** merges all open PRs with the `fleet-merge-ready` label, oldest first.
+
+**Fleet-run mode** merges PRs that contain a `<!-- fleet-run: <id> -->` marker in the body, grouping PRs from a single batch.
+
+### `jules-fleet signal create`
+
+Create a signal (insight or assessment) as a GitHub issue.
+
+```
+jules-fleet signal create --title <title> [options]
+
+Options:
+  --title <title> (required)   Signal title
+  --kind <insight|assessment>  Signal kind (default: assessment)
+  --body <markdown>            Signal body content
+  --body-file <path>           Path to a markdown file for the body
+  --tag <tags>                 Comma-separated tags
+  --scope <name>               Scope name (maps to milestone in GitHub)
+  --owner <owner>              Repository owner (auto-detected from git remote)
+  --repo <repo>                Repository name (auto-detected from git remote)
+```
+
+Insights are informational findings. Assessments are actionable tasks that dispatch picks up.
+
+### `jules-fleet configure`
+
+Manage repository resources used by fleet workflows. Typically not needed — `init` creates labels automatically.
+
+```
+jules-fleet configure <resource> --owner <owner> --repo <repo> [options]
+
+Resources:
+  labels             Create or delete fleet labels
+
+Options:
+  --delete           Delete resources instead of creating them
+```
+
+### Environment Variables
+
+Fleet auto-detects auth from environment variables. App auth takes priority over `GITHUB_TOKEN`.
+
+```
+GITHUB_TOKEN                       Auto-provided in GitHub Actions. For local use, set a PAT.
+JULES_API_KEY                      Required for analyze, dispatch, and re-dispatch.
+FLEET_APP_ID                       GitHub App ID.
+FLEET_APP_PRIVATE_KEY              GitHub App private key (base64-encoded).
+FLEET_APP_INSTALLATION_ID          GitHub App installation ID.
+FLEET_BASE_BRANCH                  Override default base branch (default: main).
+```
+
+`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_BASE64`, and `GITHUB_APP_INSTALLATION_ID` are also accepted as aliases. The `FLEET_APP_*` names are recommended because they work both as GitHub Actions secret names and as local env vars.
+
+## Programmatic API
+
+The handlers are exported for use in scripts and custom workflows.
+
+```ts
+import {
+  AnalyzeHandler,
+  DispatchHandler,
+  MergeHandler,
+  createFleetOctokit,
+} from '@google/jules-fleet';
+import type { SessionDispatcher } from '@google/jules-fleet';
+
+const octokit = createFleetOctokit();
+const dispatcher: SessionDispatcher = {
+  async dispatch(options) {
+    // Wire up to @google/jules-sdk or your own agent
+    const { jules } = await import('@google/jules-sdk');
+    return jules.session(options);
+  },
+};
+
+// Analyze — reads goals and creates analyzer sessions
+const analyzer = new AnalyzeHandler({ octokit, dispatcher });
+const analyzeResult = await analyzer.execute({
+  owner: 'your-org',
+  repo: 'your-repo',
+  goalsDir: '.fleet/goals',
+});
+
+// Dispatch — finds fleet issues and creates worker sessions
+const dispatch = new DispatchHandler({ octokit, dispatcher });
+const dispatchResult = await dispatch.execute({
+  owner: 'your-org',
+  repo: 'your-repo',
+  milestone: '1',
+});
+
+// Merge — sequentially merges fleet PRs
+const merger = new MergeHandler({ octokit });
+const mergeResult = await merger.execute({
+  owner: 'your-org',
+  repo: 'your-repo',
+  mode: 'label',
+  baseBranch: 'main',
+});
+
+if (mergeResult.success) {
+  console.log(`Merged: ${mergeResult.data.merged.join(', ')}`);
+}
+```
+
+## License
+
+Apache-2.0
+
+> **Note:** This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security).

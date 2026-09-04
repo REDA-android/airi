@@ -1,0 +1,8 @@
+node_modules
+gen
+dist
+.turbo
+.env
+.jules
+temppackage-lock.json
+*.tgz

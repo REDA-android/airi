@@ -1,0 +1,329 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// tests/mappers.test.ts
+import { describe, it, expect } from 'vitest';
+import {
+  mapRestActivityToSdkActivity,
+  mapRestArtifactToSdkArtifact,
+  mapRestSessionToSdkSession,
+  mapRestOutputToSdkOutput,
+  mapRestSourceToSdkSource,
+  mapRestStateToSdkState,
+} from '../src/mappers.js';
+import {
+  Activity,
+  Artifact,
+  RestSessionResource,
+  RestSource,
+  RestSessionOutput,
+} from '../src/types.js';
+
+import { mockPlatform } from './mocks/platform.js';
+
+describe('mapRestArtifactToSdkArtifact', () => {
+  it('should map a changeSet artifact correctly', () => {
+    const restArtifact = {
+      changeSet: {
+        source: 'sources/github/test/repo',
+        gitPatch: {
+          unidiffPatch: '--- a/file.ts\n+++ b/file.ts',
+          baseCommitId: 'abc',
+          suggestedCommitMessage: 'feat: add a file',
+        },
+      },
+    };
+    const sdkArtifact = mapRestArtifactToSdkArtifact(
+      restArtifact,
+      mockPlatform,
+    );
+    expect(sdkArtifact.type).toBe('changeSet');
+    // After mapping, it's a rich ChangeSetArtifact class with flattened properties
+    expect((sdkArtifact as any).source).toBe('sources/github/test/repo');
+    expect((sdkArtifact as any).gitPatch.unidiffPatch).toBe(
+      '--- a/file.ts\n+++ b/file.ts',
+    );
+    expect(typeof (sdkArtifact as any).parsed).toBe('function');
+  });
+
+  it('should throw for an unknown artifact type', () => {
+    const restArtifact = { unknown: {} };
+    expect(() =>
+      mapRestArtifactToSdkArtifact(restArtifact as any, mockPlatform),
+    ).toThrow('Unknown artifact type');
+  });
+});
+
+describe('mapRestActivityToSdkActivity', () => {
+  const BASE_REST_ACTIVITY = {
+    name: 'sessions/123/activities/456',
+    id: '456',
+    createTime: '2024-01-01T00:00:00Z',
+    originator: 'agent' as const,
+    artifacts: [],
+  };
+
+  it('should map an agentMessaged activity correctly', () => {
+    const restActivity = {
+      ...BASE_REST_ACTIVITY,
+      agentMessaged: { agentMessage: 'Hello there!' },
+    };
+    const sdkActivity = mapRestActivityToSdkActivity(
+      restActivity,
+      mockPlatform,
+    );
+    expect(sdkActivity.type).toBe('agentMessaged');
+    expect((sdkActivity as any).message).toBe('Hello there!');
+  });
+
+  it('should map a description field correctly', () => {
+    const restActivity = {
+      ...BASE_REST_ACTIVITY,
+      description: 'An agent description',
+      agentMessaged: { agentMessage: 'Hello there!' },
+    };
+    const sdkActivity = mapRestActivityToSdkActivity(
+      restActivity,
+      mockPlatform,
+    );
+    expect((sdkActivity as any).description).toBe('An agent description');
+  });
+
+  it('should map a progressUpdated activity correctly', () => {
+    const restActivity = {
+      ...BASE_REST_ACTIVITY,
+      progressUpdated: {
+        title: 'Thinking',
+        description: 'Analyzing the request...',
+      },
+    };
+    const sdkActivity = mapRestActivityToSdkActivity(
+      restActivity,
+      mockPlatform,
+    );
+    expect(sdkActivity.type).toBe('progressUpdated');
+    expect((sdkActivity as any).title).toBe('Thinking');
+  });
+
+  it('should map a planGenerated activity correctly', () => {
+    const plan = {
+      id: 'plan-1',
+      steps: [{ id: 'step-1', title: 'Do the thing' }],
+    };
+    const restActivity = {
+      ...BASE_REST_ACTIVITY,
+      planGenerated: { plan },
+    };
+    const sdkActivity = mapRestActivityToSdkActivity(
+      restActivity,
+      mockPlatform,
+    );
+    expect(sdkActivity.type).toBe('planGenerated');
+    expect((sdkActivity as any).plan.id).toBe('plan-1');
+  });
+
+  it('should map a sessionCompleted activity correctly', () => {
+    const restActivity = {
+      ...BASE_REST_ACTIVITY,
+      sessionCompleted: {},
+    };
+    const sdkActivity = mapRestActivityToSdkActivity(
+      restActivity,
+      mockPlatform,
+    );
+    expect(sdkActivity.type).toBe('sessionCompleted');
+  });
+
+  it('should map a sessionFailed activity correctly', () => {
+    const restActivity = {
+      ...BASE_REST_ACTIVITY,
+      sessionFailed: { reason: 'Something went wrong.' },
+    };
+    const sdkActivity = mapRestActivityToSdkActivity(
+      restActivity,
+      mockPlatform,
+    );
+    expect(sdkActivity.type).toBe('sessionFailed');
+    expect((sdkActivity as any).reason).toBe('Something went wrong.');
+  });
+
+  it('should correctly map nested artifacts', () => {
+    const restActivity = {
+      ...BASE_REST_ACTIVITY,
+      progressUpdated: { title: 'Executing command' },
+      artifacts: [
+        {
+          changeSet: {
+            source: 'sources/github/test/repo',
+            gitPatch: {
+              unidiffPatch: '--- a/file.ts\n+++ b/file.ts',
+              baseCommitId: 'abc',
+              suggestedCommitMessage: 'feat: add file',
+            },
+          },
+        },
+      ],
+    };
+    const sdkActivity = mapRestActivityToSdkActivity(
+      restActivity,
+      mockPlatform,
+    );
+    expect(sdkActivity.artifacts).toHaveLength(1);
+    expect(sdkActivity.artifacts[0].type).toBe('changeSet');
+  });
+
+  it('should throw for an unknown activity type', () => {
+    const restActivity = { ...BASE_REST_ACTIVITY, unknown: {} };
+    expect(() =>
+      mapRestActivityToSdkActivity(restActivity, mockPlatform),
+    ).toThrow('Unknown activity type');
+  });
+});
+
+describe('mapRestStateToSdkState', () => {
+  it('should map IN_PROGRESS to inProgress', () => {
+    expect(mapRestStateToSdkState('IN_PROGRESS')).toBe('inProgress');
+  });
+  it('should map COMPLETED to completed', () => {
+    expect(mapRestStateToSdkState('COMPLETED')).toBe('completed');
+  });
+});
+
+describe('mapRestSourceToSdkSource', () => {
+  it('should map githubRepo source correctly', () => {
+    const rest: RestSource = {
+      name: 'sources/github/owner/repo',
+      id: 'github/owner/repo',
+      githubRepo: {
+        owner: 'owner',
+        repo: 'repo',
+        isPrivate: false,
+        defaultBranch: { displayName: 'main' },
+      },
+    };
+    const sdk = mapRestSourceToSdkSource(rest);
+    expect(sdk.type).toBe('githubRepo');
+    if (sdk.type === 'githubRepo') {
+      expect(sdk.githubRepo.owner).toBe('owner');
+      expect(sdk.githubRepo.defaultBranch).toBe('main');
+    }
+  });
+
+  it('should map nested defaultBranch correctly', () => {
+    const rest: RestSource = {
+      name: 'sources/github/owner/repo',
+      id: 'github/owner/repo',
+      githubRepo: {
+        owner: 'owner',
+        repo: 'repo',
+        isPrivate: false,
+        defaultBranch: { displayName: 'main' },
+        branches: [{ displayName: 'main' }, { displayName: 'dev' }],
+      },
+    };
+    const sdk = mapRestSourceToSdkSource(rest);
+    expect(sdk.type).toBe('githubRepo');
+    if (sdk.type === 'githubRepo') {
+      expect(sdk.githubRepo.defaultBranch).toBe('main');
+      expect(sdk.githubRepo.branches).toEqual(['main', 'dev']);
+    }
+  });
+});
+
+describe('mapRestOutputToSdkOutput', () => {
+  it('should map pullRequest output correctly', () => {
+    const rest: RestSessionOutput = {
+      pullRequest: {
+        url: 'http://url',
+        title: 'Title',
+        description: 'Desc',
+      },
+    };
+    const sdk = mapRestOutputToSdkOutput(rest);
+    expect(sdk.type).toBe('pullRequest');
+    if (sdk.type === 'pullRequest') {
+      expect(sdk.pullRequest.url).toBe('http://url');
+    }
+  });
+});
+
+describe('mapRestSessionToSdkSession', () => {
+  it('should map session resource correctly', () => {
+    const rest: RestSessionResource = {
+      name: 'sessions/123',
+      id: '123',
+      prompt: 'prompt',
+      title: 'title',
+      createTime: '2023-01-01',
+      updateTime: '2023-01-01',
+      state: 'IN_PROGRESS',
+      url: 'url',
+      outputs: [],
+      sourceContext: { source: 's' },
+    };
+    const sdk = mapRestSessionToSdkSession(rest, mockPlatform);
+    expect(sdk.state).toBe('inProgress');
+    expect(sdk.id).toBe('123');
+    expect(sdk.outcome).toBeDefined();
+  });
+
+  it('should map outputs in session', () => {
+    const rest: RestSessionResource = {
+      // ... minimal required
+      name: 'sessions/123',
+      id: '123',
+      prompt: 'prompt',
+      title: 'title',
+      createTime: '2023-01-01',
+      updateTime: '2023-01-01',
+      state: 'COMPLETED',
+      url: 'url',
+      sourceContext: { source: 's' },
+      outputs: [
+        {
+          pullRequest: {
+            url: 'http://url',
+            title: 'Title',
+            description: 'Desc',
+          },
+        },
+      ],
+    };
+    const sdk = mapRestSessionToSdkSession(rest, mockPlatform);
+    expect(sdk.outputs).toHaveLength(1);
+    expect(sdk.outputs[0].type).toBe('pullRequest');
+  });
+
+  it('should map session configuration fields', () => {
+    const rest: RestSessionResource = {
+      name: 'sessions/123',
+      id: '123',
+      prompt: 'prompt',
+      title: 'title',
+      createTime: '2023-01-01',
+      updateTime: '2023-01-01',
+      state: 'IN_PROGRESS',
+      url: 'url',
+      outputs: [],
+      sourceContext: { source: 's' },
+      requirePlanApproval: true,
+      automationMode: 'AUTO_CREATE_PR',
+    };
+    const sdk = mapRestSessionToSdkSession(rest, mockPlatform);
+    expect(sdk.requirePlanApproval).toBe(true);
+    expect(sdk.automationMode).toBe('AUTO_CREATE_PR');
+  });
+});
