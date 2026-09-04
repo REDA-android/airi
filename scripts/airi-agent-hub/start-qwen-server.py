@@ -29,16 +29,6 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = 2048
     stream: Optional[bool] = True
 
-@app.on_event("startup")
-async def startup_event():
-    print("\n=======================================================")
-    print("  🚀 AIRI Qwen Server is running on http://127.0.0.1:8000")
-    print("  Endpoint: http://127.0.0.1:8000/v1")
-    print("  Dans AIRI : Selectionnez 'Compatible avec OpenAI'")
-    print("  Base URL  : http://127.0.0.1:8000/v1")
-    print("  API Key   : qwen-local (ou n'importe quoi)")
-    print("=======================================================\n")
-
 @app.get("/v1/models")
 async def list_models():
     return {
@@ -53,8 +43,6 @@ async def list_models():
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
     last_user_msg = request.messages[-1].content if request.messages else "Bonjour"
-    
-    # Reponse par defaut du serveur Qwen Bridge
     reply_text = f"Bonjour ! Je suis AIRI, connectee directement a votre serveur local Qwen. J'ai bien recu : '{last_user_msg}'."
     
     if request.stream:
@@ -90,4 +78,11 @@ async def create_chat_completion(request: ChatCompletionRequest):
     }
 
 if __name__ == "__main__":
+    print("=======================================================")
+    print("  AIRI Qwen Server is running on http://127.0.0.1:8000")
+    print("  Endpoint: http://127.0.0.1:8000/v1")
+    print("  Dans AIRI : Selectionnez 'Compatible avec OpenAI'")
+    print("  Base URL  : http://127.0.0.1:8000/v1")
+    print("  API Key   : qwen-local")
+    print("=======================================================")
     uvicorn.run(app, host="127.0.0.1", port=8000)
