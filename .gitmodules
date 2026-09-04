@@ -1,0 +1,27 @@
+[submodule "submodules/jules-sdk"]
+	path = submodules/jules-sdk
+	url = https://github.com/google-labs-code/jules-sdk.git
+[submodule "submodules/jules-action"]
+	path = submodules/jules-action
+	url = https://github.com/google-labs-code/jules-action.git
+[submodule "submodules/jules-awesome-list"]
+	path = submodules/jules-awesome-list
+	url = https://github.com/google-labs-code/jules-awesome-list.git
+[submodule "submodules/agents-cli"]
+	path = submodules/agents-cli
+	url = https://github.com/google/agents-cli.git
+[submodule "submodules/open-code-review"]
+	path = submodules/open-code-review
+	url = https://github.com/alibaba/open-code-review.git
+[submodule "submodules/claude-code"]
+	path = submodules/claude-code
+	url = https://github.com/anthropics/claude-code.git
+[submodule "submodules/qwen"]
+	path = submodules/qwen
+	url = https://github.com/QwenLM/Qwen.git
+[submodule "submodules/gemini-cookbook"]
+	path = submodules/gemini-cookbook
+	url = https://github.com/google-gemini/cookbook.git
+[submodule "submodules/deepmind-graphcast"]
+	path = submodules/deepmind-graphcast
+	url = https://github.com/google-deepmind/graphcast.git
