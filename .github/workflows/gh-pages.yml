@@ -43,6 +43,9 @@ jobs:
       - name: Build Interface
         run: pnpm --filter @proj-airi/stage-web exec vite build --base=/airi/
 
+      - name: Copy index.html to 404.html for GitHub Pages SPA routing
+        run: cp ./apps/stage-web/dist/index.html ./apps/stage-web/dist/404.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
