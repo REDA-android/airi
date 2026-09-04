@@ -37,7 +37,10 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --filter @proj-airi/component-calling...
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Build packages
+        run: pnpm run build:packages
 
       - name: Build Interface
         run: pnpm --filter @proj-airi/component-calling exec vite build --base=/airi/
