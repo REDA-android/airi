@@ -47,9 +47,9 @@ const routeRecords = setupLayouts(routes as RouteRecordRaw[])
 
 let router: Router
 if (isEnvTruthy(import.meta.env.VITE_APP_TARGET_HUGGINGFACE_SPACE))
-  router = createRouter({ routes: routeRecords, history: createWebHashHistory() })
+  router = createRouter({ routes: routeRecords, history: createWebHashHistory(import.meta.env.BASE_URL) })
 else
-  router = createRouter({ routes: routeRecords, history: createWebHistory() })
+  router = createRouter({ routes: routeRecords, history: createWebHistory(import.meta.env.BASE_URL) })
 
 router.beforeEach((to, from) => {
   if (to.path !== from.path)
