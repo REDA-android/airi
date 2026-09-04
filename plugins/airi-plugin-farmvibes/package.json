@@ -1,0 +1,14 @@
+{
+  "name": "airi-plugin-farmvibes",
+  "version": "1.0.0",
+  "description": "Airi plugin to interact with FarmVibes ML Service",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
