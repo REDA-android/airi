@@ -1,5 +1,5 @@
 {
-  "experimentalServices": {
+  "services": {
     "api": {
       "root": "server/apps/api",
       "mountPath": "/api/api"
