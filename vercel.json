@@ -1,0 +1,12 @@
+{
+  "experimentalServices": {
+    "api": {
+      "root": "server/apps/api",
+      "mountPath": "/api/api"
+    },
+    "auth": {
+      "root": "server/apps/auth",
+      "mountPath": "/api/auth"
+    }
+  }
+}
