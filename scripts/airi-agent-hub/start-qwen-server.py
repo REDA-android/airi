@@ -1,12 +1,13 @@
 import argparse
+import asyncio
 import json
 import time
 from typing import List, Optional
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sse_starlette.sse import EventSourceResponse
 
 app = FastAPI(title="AIRI Qwen Agent Server", version="1.0.0")
 
@@ -60,10 +61,20 @@ async def create_chat_completion(request: ChatCompletionRequest):
                         "finish_reason": None if i < len(words) - 1 else "stop"
                     }]
                 }
+                # Standard SSE format expected by AIRI and OpenAI client
                 yield f"data: {json.dumps(chunk)}\n\n"
+                await asyncio.sleep(0.04) # smooth typing animation effect
             yield "data: [DONE]\n\n"
 
-        return EventSourceResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
 
     return {
         "id": f"chatcmpl-{int(time.time())}",
@@ -79,10 +90,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
 if __name__ == "__main__":
     print("=======================================================")
-    print("  AIRI Qwen Server is running on http://127.0.0.1:8000")
+    print("  AIRI Qwen Server running on http://127.0.0.1:8000")
     print("  Endpoint: http://127.0.0.1:8000/v1")
-    print("  Dans AIRI : Selectionnez 'Compatible avec OpenAI'")
-    print("  Base URL  : http://127.0.0.1:8000/v1")
-    print("  API Key   : qwen-local")
     print("=======================================================")
     uvicorn.run(app, host="127.0.0.1", port=8000)
